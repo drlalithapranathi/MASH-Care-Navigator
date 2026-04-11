@@ -1,0 +1,104 @@
+services:
+  nginx-proxy:
+    image: nginxproxy/nginx-proxy:1.6
+    container_name: nginx-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - certs:/etc/nginx/certs:ro
+      - vhost:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+    environment:
+      - DEFAULT_HOST=${VIRTUAL_HOST}
+    networks:
+      - proxy-net
+      - openmrs-net
+
+  acme-companion:
+    image: nginxproxy/acme-companion:2.4
+    container_name: acme-companion
+    restart: unless-stopped
+    depends_on:
+      - nginx-proxy
+    volumes:
+      - certs:/etc/nginx/certs:rw
+      - vhost:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      - acme:/etc/acme.sh
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - DEFAULT_EMAIL=${LETSENCRYPT_EMAIL}
+      - NGINX_PROXY_CONTAINER=nginx-proxy
+    networks:
+      - proxy-net
+
+  db:
+    image: mysql:5.6
+    container_name: openmrs-db
+    restart: unless-stopped
+    command: >
+      mysqld
+      --character-set-server=utf8
+      --collation-server=utf8_general_ci
+      --max_allowed_packet=64M
+      --innodb_buffer_pool_size=1G
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DB:-openmrs}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-Admin123}
+      MYSQL_USER: ${MYSQL_USER:-openmrs}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-Admin123}
+    volumes:
+      - db-data:/var/lib/mysql
+    networks:
+      - openmrs-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-Admin123}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  openmrs:
+    image: openmrs/openmrs-reference-application-distro:${OPENMRS_VERSION:-demo}
+    container_name: openmrs-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_DATABASE: ${MYSQL_DB:-openmrs}
+      DB_HOST: db
+      DB_USERNAME: ${MYSQL_USER:-openmrs}
+      DB_PASSWORD: ${MYSQL_PASSWORD:-Admin123}
+      DB_CREATE_TABLES: "true"
+      DB_AUTO_UPDATE: "true"
+      VIRTUAL_HOST: ${VIRTUAL_HOST}
+      VIRTUAL_PORT: 8080
+      LETSENCRYPT_HOST: ${VIRTUAL_HOST}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
+      JAVA_OPTS: >-
+        -Xmx2g
+        -Xms1g
+        -XX:+UseG1GC
+        -Djava.security.egd=file:/dev/./urandom
+    volumes:
+      - openmrs-data:/root/.OpenMRS
+    networks:
+      - proxy-net
+      - openmrs-net
+
+volumes:
+  certs:
+  vhost:
+  html:
+  acme:
+  db-data:
+  openmrs-data:
+
+networks:
+  proxy-net:
+    name: proxy-net
+  openmrs-net:
+    name: openmrs-net
